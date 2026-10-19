@@ -1,12 +1,12 @@
 // AutoPrompter: Pegar → Grabar → Guardar, on iPhone Safari.
-import { parseScript, normalize } from './script.js?v=3';
-import { ScriptMatcher } from './matcher.js?v=3';
-import { VoiceFollower } from './speech.js?v=3';
+import { parseScript, normalize } from './script.js?v=4';
+import { ScriptMatcher } from './matcher.js?v=4';
+import { VoiceFollower } from './speech.js?v=4';
 
 // Camera, background and audio code load only when the record screen opens,
 // so the script screen always works even if one of them can't run on this phone.
-const loadCompositor = () => import('./compositor.js?v=3').then((m) => m.Compositor);
-const loadAudio = () => import('./audio.js?v=3').then((m) => m.AudioChain);
+const loadCompositor = () => import('./compositor.js?v=4').then((m) => m.Compositor);
+const loadAudio = () => import('./audio.js?v=4').then((m) => m.AudioChain);
 
 // Show any unexpected error on screen, so a problem on the phone can be reported.
 function showError(message) {
@@ -25,7 +25,7 @@ const DEFAULTS = {
   fontSize: 30, margin: 18, textOpacity: 1, shade: 0.45, panelHeight: 0.42, readingLine: 0.18,
   scrollMode: 'voice', wpm: 140, lang: 'en-US', hanRate: 3,
   pinyinScope: 'edges', pinyinStyle: 'marks', pinyinDisplay: 'only',
-  bgMode: 'blur', bgColor: '#174a3c',
+  bgEnabled: true, bgMode: 'blur', bgColor: '#174a3c',
   noiseReduction: 12, voiceEQ: true, targetLUFS: -14, learnedGainDB: 12,
   quality: '1080',
 };
@@ -41,6 +41,8 @@ const store = {
 };
 
 let settings = { ...DEFAULTS, ...store.get('settings', {}) };
+// Older versions had "original" as a background kind; it is now the on/off switch.
+if (settings.bgMode === 'original') { settings.bgMode = 'blur'; settings.bgEnabled = false; }
 let scriptText = store.get('script', '');
 let overrides = store.get('overrides', {});
 let bgImage = null;
@@ -213,6 +215,8 @@ $('s-lang').value = settings.lang;
 $('s-lang').addEventListener('change', () => { settings.lang = $('s-lang').value; saveSettings(); });
 $('s-color').value = settings.bgColor;
 $('s-color').addEventListener('input', () => { settings.bgColor = $('s-color').value; saveSettings(); });
+$('s-bg-on').checked = settings.bgEnabled;
+$('s-bg-on').addEventListener('change', () => { settings.bgEnabled = $('s-bg-on').checked; saveSettings(); applyBackground(); });
 $('s-eq').checked = settings.voiceEQ;
 $('s-eq').addEventListener('change', () => { settings.voiceEQ = $('s-eq').checked; saveSettings(); });
 $('s-image').addEventListener('change', async () => {
@@ -359,8 +363,8 @@ async function openRecorder() {
   }
   rec.compositor = new Compositor($('stage'), video);
   rec.compositor.setSize(...size);
-  rec.compositor.setBackground(settings.bgMode, settings.bgColor, bgImage);
   rec.compositor.start();
+  rec.segmenterLoading = null;
 
   // Audio clean-up: wait a few seconds at most, otherwise record the plain microphone.
   setNotice('Preparando el audio…');
@@ -378,19 +382,37 @@ async function openRecorder() {
   }
   $('shutter').disabled = false;
 
-  // The background model is large; it loads while you can already record, and applies as soon as it is ready.
-  if (settings.bgMode !== 'original') {
-    const before = $('notice').textContent;
-    if (!before) setNotice('Cargando el fondo… Puedes grabar ya; se aplica en cuanto esté listo.');
-    rec.compositor.init().then((ok) => {
-      if (!rec.compositor) return;
-      if (!ok) setNotice('El recorte de fondo no está disponible en este iPhone. Se grabará el fondo original.');
-      else if ($('notice').textContent.startsWith('Cargando el fondo')) setNotice('');
-    }).catch((error) => setNotice('El recorte de fondo ha fallado: ' + (error?.message || error)));
-  }
+  applyBackground();
 
   try { rec.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* optional */ }
 }
+
+/** Turns background replacement on or off for the live picture and the recording. */
+function applyBackground() {
+  const on = settings.bgEnabled;
+  $('toggle-bg').classList.toggle('on', on);
+  $('toggle-bg').setAttribute('aria-pressed', String(on));
+  $('toggle-bg-label').textContent = on ? 'Fondo' : 'Sin fondo';
+  if (!rec.compositor) return;
+  rec.compositor.setBackground(on ? settings.bgMode : 'original', settings.bgColor, bgImage);
+  if (!on || rec.compositor.segmenter || rec.segmenterLoading) return;
+  // The background model is large; it loads while you can already record, and applies as soon as it is ready.
+  const compositor = rec.compositor;
+  if (!$('notice').textContent) setNotice('Cargando el fondo… Puedes grabar ya; se aplica en cuanto esté listo.');
+  rec.segmenterLoading = compositor.init().then((ok) => {
+    if (rec.compositor !== compositor) return;
+    if (!ok) setNotice('El cambio de fondo no está disponible en este iPhone. Se grabará el fondo real.');
+    else if ($('notice').textContent.startsWith('Cargando el fondo')) setNotice('');
+  }).catch((error) => setNotice('El cambio de fondo ha fallado: ' + (error?.message || error)));
+}
+
+$('toggle-bg').addEventListener('click', () => {
+  settings.bgEnabled = !settings.bgEnabled;
+  saveSettings();
+  $('s-bg-on').checked = settings.bgEnabled;
+  if (!settings.bgEnabled && $('notice').textContent.startsWith('Cargando el fondo')) setNotice('');
+  applyBackground();
+});
 
 function closeRecorder() {
   stopFollowing();
