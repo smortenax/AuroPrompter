@@ -10,7 +10,7 @@ const VERSION = '1.0.0';
 const DEFAULTS = {
   fontSize: 30, margin: 18, textOpacity: 1, shade: 0.45, panelHeight: 0.42, readingLine: 0.18,
   scrollMode: 'voice', wpm: 140, lang: 'en-US',
-  pinyinScope: 'edges', pinyinStyle: 'marks',
+  pinyinScope: 'edges', pinyinStyle: 'marks', pinyinDisplay: 'only',
   bgMode: 'blur', bgColor: '#174a3c',
   noiseReduction: 12, voiceEQ: true, targetLUFS: -14, learnedGainDB: 12,
   quality: '1080',
@@ -48,21 +48,31 @@ function loadBackgroundImage() {
 // ---------- 1. Script screen ----------
 const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+const CJK_PUNCT = { '，': ',', '、': ',', '。': '.', '！': '!', '？': '?', '：': ':', '；': ';' };
+
 function prompterHTML(tokens) {
+  const only = settings.pinyinDisplay === 'only';
   let html = '';
   let prev = null;
   for (const t of tokens) {
     if (t.kind === 'br') { html += '<br>'; prev = t; continue; }
-    if (prev && prev.kind !== 'br' && !(prev.kind === 'han' && t.kind === 'han')) html += ' ';
-    if (t.kind === 'han' && t.pinyin) html += `<ruby class="t" data-i="${t.i}">${esc(t.text)}<rt>${esc(t.pinyin)}</rt></ruby>`;
-    else html += `<span class="t" data-i="${t.i}">${esc(t.text)}</span>`;
+    // In pinyin-only mode, Chinese punctuation becomes its Latin form and sticks to the syllable before it.
+    const text = only && t.kind === 'word' ? t.text.replace(/[，、。！？：；]/g, (c) => CJK_PUNCT[c]) : t.text;
+    const joinHan = prev && prev.kind === 'han' && t.kind === 'han' && !(only && t.pinyin);
+    const gluePunct = only && prev?.kind === 'han' && t.kind === 'word' && /^[,.!?:;]/.test(text);
+    if (prev && prev.kind !== 'br' && !joinHan && !gluePunct) html += ' ';
+    if (t.kind === 'han' && t.pinyin && only) html += `<span class="t py" data-i="${t.i}">${esc(t.pinyin)}</span>`;
+    else if (t.kind === 'han' && t.pinyin) html += `<ruby class="t" data-i="${t.i}">${esc(t.text)}<rt>${esc(t.pinyin)}</rt></ruby>`;
+    else html += `<span class="t" data-i="${t.i}">${esc(text)}</span>`;
     prev = t;
   }
   return html;
 }
 
 function reparse() {
-  parsed = parseScript(scriptText, { scope: settings.pinyinScope, style: settings.pinyinStyle, overrides });
+  // With pinyin only, every Chinese character is shown as pinyin, so all of them need it.
+  const scope = settings.pinyinDisplay === 'only' ? 'all' : settings.pinyinScope;
+  parsed = parseScript(scriptText, { scope, style: settings.pinyinStyle, overrides });
   const words = parsed.spoken.length;
   const seconds = Math.round(words / settings.wpm * 60);
   $('script-meta').textContent = words
@@ -158,6 +168,7 @@ function syncSegments() {
     const key = seg.dataset.key;
     seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', String(settings[key]) === b.dataset.value));
   });
+  $('row-scope').hidden = settings.pinyinDisplay === 'only';
   $('row-color').hidden = settings.bgMode !== 'color';
   $('row-image').hidden = settings.bgMode !== 'image';
 }
