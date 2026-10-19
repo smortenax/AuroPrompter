@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AutoPrompter">
+<meta name="theme-color" content="#0d0f12">
+<title>AutoPrompter</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 1. Guion -->
+<section id="screen-script" class="screen">
+  <header class="bar">
+    <h1>AutoPrompter</h1>
+    <button id="open-settings" class="icon-btn" aria-label="Ajustes">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+    </button>
+  </header>
+
+  <main class="scroll">
+    <div class="block">
+      <div class="block-head">
+        <h2>Guion de hoy</h2>
+        <div class="row-actions">
+          <button id="paste" class="chip">Pegar</button>
+          <button id="clear" class="chip quiet">Borrar</button>
+        </div>
+      </div>
+      <textarea id="script" rows="8" placeholder="Pega aquí el guion del vídeo…" autocapitalize="sentences"></textarea>
+      <p id="script-meta" class="meta"></p>
+    </div>
+
+    <div id="runs-block" class="block" hidden>
+      <div class="block-head"><h2>Pronunciación</h2></div>
+      <p class="meta">Toca el pinyin para corregirlo. La corrección se recuerda para esa frase.</p>
+      <div id="runs"></div>
+    </div>
+
+    <div class="block">
+      <div class="block-head"><h2>Así se verá</h2></div>
+      <div id="preview" class="prompter-text preview"></div>
+    </div>
+  </main>
+
+  <footer class="dock">
+    <button id="go-record" class="record-cta">
+      <span class="dot"></span> Grabar
+    </button>
+  </footer>
+</section>
+
+<!-- 2. Grabar -->
+<section id="screen-record" class="screen camera" hidden>
+  <canvas id="stage"></canvas>
+  <video id="camera" playsinline muted autoplay></video>
+
+  <div id="prompter" class="prompter">
+    <div id="prompter-text" class="prompter-text"></div>
+    <div class="reading-line" aria-hidden="true"></div>
+  </div>
+
+  <div id="notice" class="notice" hidden></div>
+  <div id="countdown" class="countdown" hidden>
+    <span id="countdown-num">3</span>
+    <small>Silencio un momento: estoy midiendo el ruido de la sala</small>
+  </div>
+
+  <div id="text-controls" class="sheet-mini" hidden>
+    <label>Tamaño <input id="tc-size" type="range" min="18" max="64" step="1"></label>
+    <label>Márgenes <input id="tc-margin" type="range" min="0" max="60" step="1"></label>
+    <label>Texto <input id="tc-opacity" type="range" min="0.3" max="1" step="0.05"></label>
+    <label>Sombra <input id="tc-shade" type="range" min="0" max="0.9" step="0.05"></label>
+    <label>Alto <input id="tc-height" type="range" min="0.2" max="0.75" step="0.01"></label>
+    <label id="tc-speed-row">Velocidad <input id="tc-speed" type="range" min="80" max="240" step="5"></label>
+  </div>
+
+  <div class="camera-controls">
+    <button id="close-record" class="icon-btn round" aria-label="Cerrar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+    <button id="shutter" class="shutter" aria-label="Grabar"><span></span></button>
+    <button id="toggle-text" class="icon-btn round" aria-label="Ajustar texto">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18l5-12 5 12M5.8 14h6.4M15 18l3-7 3 7M15.9 16h4.2"/></svg>
+    </button>
+    <span id="timer" class="timer" hidden>0:00</span>
+  </div>
+</section>
+
+<!-- 3. Procesando / resultado -->
+<section id="screen-result" class="screen" hidden>
+  <header class="bar">
+    <h1>Tu vídeo</h1>
+  </header>
+  <main class="scroll result">
+    <video id="result-video" playsinline controls></video>
+    <p id="result-meta" class="meta center"></p>
+    <div class="result-actions">
+      <button id="save" class="primary">Guardar en Fotos</button>
+      <button id="again" class="secondary">Repetir</button>
+      <button id="done" class="secondary">Listo</button>
+    </div>
+    <p id="save-hint" class="meta center">En el menú que se abre, elige «Guardar vídeo».</p>
+  </main>
+</section>
+
+<!-- Ajustes -->
+<div id="settings" class="sheet" hidden>
+  <div class="sheet-panel" role="dialog" aria-label="Ajustes">
+    <header class="bar">
+      <h1>Plantilla</h1>
+      <button id="close-settings" class="chip">Listo</button>
+    </header>
+    <main class="scroll">
+      <p class="meta">Todo se guarda y se usa cada día, así los vídeos salen iguales.</p>
+
+      <h2 class="group">Teleprompter</h2>
+      <div class="field">
+        <span>Desplazamiento</span>
+        <div class="seg" data-key="scrollMode">
+          <button data-value="voice">Sigue mi voz</button>
+          <button data-value="constant">Velocidad fija</button>
+        </div>
+      </div>
+      <label class="field"><span>Idioma en que hablas</span>
+        <select id="s-lang">
+          <option value="en-US">Inglés (EE. UU.)</option>
+          <option value="en-GB">Inglés (Reino Unido)</option>
+          <option value="es-ES">Español (España)</option>
+          <option value="es-MX">Español (México)</option>
+          <option value="zh-CN">Chino mandarín</option>
+          <option value="fr-FR">Francés</option>
+          <option value="de-DE">Alemán</option>
+          <option value="it-IT">Italiano</option>
+          <option value="pt-BR">Portugués (Brasil)</option>
+        </select>
+      </label>
+      <label class="field"><span>Velocidad fija <output id="o-wpm"></output></span>
+        <input id="s-wpm" type="range" min="80" max="240" step="5"></label>
+      <label class="field"><span>Tamaño de letra <output id="o-size"></output></span>
+        <input id="s-size" type="range" min="18" max="64" step="1"></label>
+      <label class="field"><span>Línea de lectura <output id="o-line"></output></span>
+        <input id="s-line" type="range" min="0.05" max="0.6" step="0.01"></label>
+
+      <h2 class="group">Pinyin</h2>
+      <div class="field">
+        <span>Mostrar pinyin en</span>
+        <div class="seg" data-key="pinyinScope">
+          <button data-value="edges">Inicio y final</button>
+          <button data-value="all">Todo el chino</button>
+        </div>
+      </div>
+      <div class="field">
+        <span>Estilo</span>
+        <div class="seg" data-key="pinyinStyle">
+          <button data-value="marks">nǐ hǎo</button>
+          <button data-value="num">ni3 hao3</button>
+        </div>
+      </div>
+      <button id="forget-fixes" class="link-btn" hidden>Olvidar mis correcciones de pinyin</button>
+
+      <h2 class="group">Fondo</h2>
+      <div class="field">
+        <div class="seg" data-key="bgMode">
+          <button data-value="original">Original</button>
+          <button data-value="blur">Difuminado</button>
+          <button data-value="color">Color</button>
+          <button data-value="image">Imagen</button>
+        </div>
+      </div>
+      <label class="field" id="row-color"><span>Color</span><input id="s-color" type="color"></label>
+      <div class="field" id="row-image">
+        <span>Imagen de fondo</span>
+        <div class="image-pick">
+          <img id="bg-thumb" alt="" hidden>
+          <label class="chip file-chip">Elegir imagen<input id="s-image" type="file" accept="image/*"></label>
+        </div>
+      </div>
+
+      <h2 class="group">Audio</h2>
+      <label class="field"><span>Reducción de ruido <output id="o-nr"></output></span>
+        <input id="s-nr" type="range" min="0" max="24" step="1"></label>
+      <label class="field toggle"><span>Ecualizador de voz</span><input id="s-eq" type="checkbox"></label>
+      <div class="field">
+        <span>Volumen final</span>
+        <div class="seg" data-key="targetLUFS" data-number>
+          <button data-value="-14">−14 LUFS</button>
+          <button data-value="-15">−15</button>
+          <button data-value="-16">−16</button>
+        </div>
+      </div>
+
+      <h2 class="group">Vídeo</h2>
+      <div class="field">
+        <span>Calidad</span>
+        <div class="seg" data-key="quality">
+          <button data-value="1080">1080p</button>
+          <button data-value="720">720p (más fluido)</button>
+        </div>
+      </div>
+
+      <button id="reset-settings" class="link-btn danger">Restablecer la plantilla</button>
+      <p class="meta small" id="version"></p>
+    </main>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
