@@ -1,9 +1,23 @@
 // AutoPrompter: Pegar → Grabar → Guardar, on iPhone Safari.
-import { parseScript, normalize } from './script.js?v=2';
-import { ScriptMatcher } from './matcher.js?v=2';
-import { VoiceFollower } from './speech.js?v=2';
-import { Compositor } from './compositor.js?v=2';
-import { AudioChain } from './audio.js?v=2';
+import { parseScript, normalize } from './script.js?v=3';
+import { ScriptMatcher } from './matcher.js?v=3';
+import { VoiceFollower } from './speech.js?v=3';
+
+// Camera, background and audio code load only when the record screen opens,
+// so the script screen always works even if one of them can't run on this phone.
+const loadCompositor = () => import('./compositor.js?v=3').then((m) => m.Compositor);
+const loadAudio = () => import('./audio.js?v=3').then((m) => m.AudioChain);
+
+// Show any unexpected error on screen, so a problem on the phone can be reported.
+function showError(message) {
+  const box = document.getElementById('error-banner');
+  if (!box) return;
+  box.textContent = 'Error: ' + message;
+  box.hidden = false;
+}
+window.addEventListener('error', (e) => showError(e.message || String(e.error)));
+window.addEventListener('unhandledrejection', (e) => showError(e.reason?.message || String(e.reason)));
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('timeout'), ms))]);
 
 const VERSION = '1.0.0';
 
@@ -336,27 +350,44 @@ async function openRecorder() {
   try { await video.play(); } catch { /* starts on the next tap */ }
 
   const size = settings.quality === '720' ? [720, 1280] : [1080, 1920];
+  let Compositor;
+  try {
+    Compositor = await loadCompositor();
+  } catch (error) {
+    showError('no se pudo cargar el módulo de vídeo (' + (error?.message || error) + ')');
+    return;
+  }
   rec.compositor = new Compositor($('stage'), video);
   rec.compositor.setSize(...size);
   rec.compositor.setBackground(settings.bgMode, settings.bgColor, bgImage);
   rec.compositor.start();
 
-  const tasks = [];
-  if (settings.bgMode !== 'original') {
-    setNotice('Cargando el recorte de fondo…');
-    tasks.push(rec.compositor.init().then((ok) => {
-      if (!ok) setNotice('El recorte de fondo no está disponible en este iPhone. Se grabará el fondo original.');
-    }));
-  }
-  rec.audio = new AudioChain();
-  tasks.push(rec.audio.init(rec.stream, settings).catch((error) => {
+  // Audio clean-up: wait a few seconds at most, otherwise record the plain microphone.
+  setNotice('Preparando el audio…');
+  try {
+    const AudioChain = await loadAudio();
+    const audio = new AudioChain();
+    const outcome = await withTimeout(audio.init(rec.stream, settings), 5000);
+    if (outcome === 'timeout') throw new Error('timeout');
+    rec.audio = audio;
+    setNotice('');
+  } catch (error) {
     console.warn('Audio chain failed', error);
     rec.audio = null;
-  }));
-  await Promise.all(tasks);
-  if ($('notice').textContent.startsWith('Cargando') || $('notice').textContent.startsWith('Preparando')) setNotice('');
-  if (!rec.audio) setNotice('La limpieza de audio no está disponible: se grabará el sonido tal cual.');
+    setNotice('La limpieza de audio no está disponible: se grabará el sonido tal cual.');
+  }
   $('shutter').disabled = false;
+
+  // The background model is large; it loads while you can already record, and applies as soon as it is ready.
+  if (settings.bgMode !== 'original') {
+    const before = $('notice').textContent;
+    if (!before) setNotice('Cargando el fondo… Puedes grabar ya; se aplica en cuanto esté listo.');
+    rec.compositor.init().then((ok) => {
+      if (!rec.compositor) return;
+      if (!ok) setNotice('El recorte de fondo no está disponible en este iPhone. Se grabará el fondo original.');
+      else if ($('notice').textContent.startsWith('Cargando el fondo')) setNotice('');
+    }).catch((error) => setNotice('El recorte de fondo ha fallado: ' + (error?.message || error)));
+  }
 
   try { rec.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* optional */ }
 }
@@ -443,10 +474,13 @@ async function startRecording() {
   if (!rec.stream) return;
   $('text-controls').hidden = true;
   rec.state = 'countdown';
-  await rec.audio?.resume();
-  rec.audio?.learnNoise(true);
-  // Speech recognition has to start from the tap itself on iOS.
+  // Speech recognition and audio have to start from the tap itself on iOS, before any waiting.
   startFollowing();
+  const resumed = rec.audio ? withTimeout(rec.audio.resume(), 1500) : null;
+  $('countdown-num').textContent = 3;
+  $('countdown').hidden = false;
+  if ((await resumed) === 'timeout') console.warn('Audio did not resume');
+  rec.audio?.learnNoise(true);
 
   $('countdown').hidden = false;
   for (const n of [3, 2, 1]) {

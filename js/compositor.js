@@ -1,5 +1,4 @@
 // Draws every camera frame into a 9:16 canvas, replacing the background behind the person.
-import { FilesetResolver, ImageSegmenter } from '../vendor/mediapipe/vision_bundle.mjs';
 
 export class Compositor {
   constructor(canvas, video) {
@@ -38,6 +37,7 @@ export class Compositor {
   /** Loads the on-device person segmentation model. Falls back to the CPU, then to no segmentation. */
   async init() {
     const base = new URL('../vendor/', import.meta.url).href;
+    const { FilesetResolver, ImageSegmenter } = await import('../vendor/mediapipe/vision_bundle.mjs');
     const fileset = await FilesetResolver.forVisionTasks(base + 'mediapipe/wasm');
     for (const delegate of ['GPU', 'CPU']) {
       try {
@@ -59,12 +59,23 @@ export class Compositor {
   start() {
     if (this.running) return;
     this.running = true;
-    const loop = () => {
-      if (!this.running) return;
-      this.draw();
+    const v = this.video;
+    if (v.requestVideoFrameCallback) {
+      // Draw once per camera frame.
+      const onFrame = () => {
+        if (!this.running) return;
+        this.draw();
+        v.requestVideoFrameCallback(onFrame);
+      };
+      v.requestVideoFrameCallback(onFrame);
+    } else {
+      const loop = () => {
+        if (!this.running) return;
+        this.draw();
+        requestAnimationFrame(loop);
+      };
       requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
+    }
   }
 
   stop() {
@@ -81,8 +92,6 @@ export class Compositor {
   draw() {
     const v = this.video;
     if (v.readyState < 2 || !v.videoWidth) return;
-    if (v.currentTime === this.lastVideoTime) return; // no new camera frame yet
-    this.lastVideoTime = v.currentTime;
     this.frameTimes.push(performance.now());
 
     const W = this.canvas.width, H = this.canvas.height;
