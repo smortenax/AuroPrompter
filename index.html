@@ -12,7 +12,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-180.png">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
 
@@ -144,6 +144,8 @@
       </label>
       <label class="field"><span>Velocidad fija <output id="o-wpm"></output></span>
         <input id="s-wpm" type="range" min="80" max="240" step="5"></label>
+      <label class="field"><span>Ritmo del pinyin <output id="o-han"></output></span>
+        <input id="s-han" type="range" min="1.5" max="6" step="0.25"></label>
       <label class="field"><span>Tamaño de letra <output id="o-size"></output></span>
         <input id="s-size" type="range" min="18" max="64" step="1"></label>
       <label class="field"><span>Línea de lectura <output id="o-line"></output></span>
@@ -219,6 +221,6 @@
   </div>
 </div>
 
-<script type="module" src="js/app.js"></script>
+<script type="module" src="js/app.js?v=2"></script>
 </body>
 </html>

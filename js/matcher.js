@@ -1,10 +1,10 @@
 // Works out where in the script the speaker is from the recognizer's running transcript.
 // Only moves forward, and only on a confident match, so a misheard word never jumps the text.
-import { normalize } from './script.js';
+import { normalize } from './script.js?v=2';
 
 const TAIL = 4;
 const LOOK_BEHIND = 2;
-const LOOK_AHEAD = 25;
+const LOOK_AHEAD = 45;
 
 function editDistance(a, b) {
   let prev = Array.from({ length: b.length + 1 }, (_, j) => j);

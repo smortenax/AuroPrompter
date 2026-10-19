@@ -1,15 +1,15 @@
 // AutoPrompter: Pegar → Grabar → Guardar, on iPhone Safari.
-import { parseScript } from './script.js';
-import { ScriptMatcher } from './matcher.js';
-import { VoiceFollower } from './speech.js';
-import { Compositor } from './compositor.js';
-import { AudioChain } from './audio.js';
+import { parseScript, normalize } from './script.js?v=2';
+import { ScriptMatcher } from './matcher.js?v=2';
+import { VoiceFollower } from './speech.js?v=2';
+import { Compositor } from './compositor.js?v=2';
+import { AudioChain } from './audio.js?v=2';
 
 const VERSION = '1.0.0';
 
 const DEFAULTS = {
   fontSize: 30, margin: 18, textOpacity: 1, shade: 0.45, panelHeight: 0.42, readingLine: 0.18,
-  scrollMode: 'voice', wpm: 140, lang: 'en-US',
+  scrollMode: 'voice', wpm: 140, lang: 'en-US', hanRate: 3,
   pinyinScope: 'edges', pinyinStyle: 'marks', pinyinDisplay: 'only',
   bgMode: 'blur', bgColor: '#174a3c',
   noiseReduction: 12, voiceEQ: true, targetLUFS: -14, learnedGainDB: 12,
@@ -73,6 +73,11 @@ function reparse() {
   // With pinyin only, every Chinese character is shown as pinyin, so all of them need it.
   const scope = settings.pinyinDisplay === 'only' ? 'all' : settings.pinyinScope;
   parsed = parseScript(scriptText, { scope, style: settings.pinyinStyle, overrides });
+  // What the prompter steps through: every spoken word and every Chinese character, in order.
+  // Chinese has an empty key, so the English recognizer never matches it; it is timed instead.
+  parsed.track = parsed.tokens
+    .filter((t) => t.kind === 'han' || (t.kind === 'word' && normalize(t.text)))
+    .map((t) => ({ norm: t.kind === 'han' ? '' : normalize(t.text), token: t.i, han: t.kind === 'han' }));
   const words = parsed.spoken.length;
   const seconds = Math.round(words / settings.wpm * 60);
   $('script-meta').textContent = words
@@ -186,6 +191,7 @@ document.querySelectorAll('.seg').forEach((seg) => {
 });
 
 bindRange('s-wpm', 'wpm', 'o-wpm', (v) => `${v} pal/min`);
+bindRange('s-han', 'hanRate', 'o-han', (v) => `${v} sílabas/s`);
 bindRange('s-size', 'fontSize', 'o-size', (v) => `${v} pt`);
 bindRange('s-line', 'readingLine', 'o-line', (v) => `${Math.round(v * 100)} %`);
 bindRange('s-nr', 'noiseReduction', 'o-nr', (v) => (v ? `${v} dB` : 'apagada'));
@@ -289,12 +295,12 @@ function scrollToCurrent(smooth) {
 }
 
 function wordIndexForToken(tokenIndex) {
-  const idx = parsed.spoken.findIndex((w) => w.token >= tokenIndex);
-  return idx === -1 ? parsed.spoken.length : idx;
+  const idx = parsed.track.findIndex((w) => w.token >= tokenIndex);
+  return idx === -1 ? parsed.track.length : idx;
 }
 
 function tokenForWord(wordIndex) {
-  return wordIndex < parsed.spoken.length ? parsed.spoken[wordIndex].token : parsed.tokens.length;
+  return wordIndex < parsed.track.length ? parsed.track[wordIndex].token : parsed.tokens.length;
 }
 
 $('prompter-text').addEventListener('click', (e) => {
@@ -310,7 +316,7 @@ async function openRecorder() {
   $('screen-record').hidden = false;
   $('prompter-text').innerHTML = prompterHTML(parsed.tokens);
   applyPrompterLook();
-  rec.matcher = new ScriptMatcher(parsed.spoken.map((w) => w.norm));
+  rec.matcher = new ScriptMatcher(parsed.track.map((w) => w.norm));
   setCurrent(tokenForWord(0), false);
   $('shutter').disabled = true;
   setNotice('Preparando la cámara…');
@@ -401,7 +407,31 @@ function startFollowing() {
   }
 }
 
+/** Chinese can't be heard by the recognizer, so while the next item is Chinese, step through it at a steady pace. */
+function startChineseTimer() {
+  let budget = -600; // give the speaker a moment to start after the countdown
+  let last = performance.now();
+  rec.hanTimer = setInterval(() => {
+    const now = performance.now();
+    const elapsed = now - last;
+    last = now;
+    const item = parsed.track[rec.matcher.position];
+    if (!item || !item.han) { budget = Math.min(budget, 0); return; }
+    budget += elapsed;
+    const step = 1000 / settings.hanRate;
+    let moved = false;
+    while (budget >= step && parsed.track[rec.matcher.position]?.han) {
+      budget -= step;
+      rec.matcher.jump(rec.matcher.position + 1);
+      moved = true;
+    }
+    if (moved) setCurrent(tokenForWord(rec.matcher.position));
+  }, 100);
+}
+
 function stopFollowing() {
+  clearInterval(rec.hanTimer);
+  rec.hanTimer = null;
   rec.follower?.stop();
   rec.follower = null;
   clearInterval(rec.scrollTimer);
@@ -450,6 +480,7 @@ async function startRecording() {
   rec.audio?.startMeter();
   rec.state = 'recording';
   rec.pendingConstant?.();
+  if (settings.scrollMode === 'voice' && rec.follower) startChineseTimer();
   rec.pendingConstant = null;
   rec.startedAt = Date.now();
   $('screen-record').classList.add('recording');
