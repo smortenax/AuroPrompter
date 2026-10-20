@@ -1,12 +1,12 @@
 // AutoPrompter: Pegar → Grabar → Guardar, on iPhone Safari.
-import { parseScript, normalize } from './script.js?v=5';
-import { ScriptMatcher } from './matcher.js?v=5';
-import { VoiceFollower } from './speech.js?v=5';
+import { parseScript, normalize } from './script.js?v=6';
+import { ScriptMatcher } from './matcher.js?v=6';
+import { VoiceFollower } from './speech.js?v=6';
 
 // Camera, background and audio code load only when the record screen opens,
 // so the script screen always works even if one of them can't run on this phone.
-const loadCompositor = () => import('./compositor.js?v=5').then((m) => m.Compositor);
-const loadAudio = () => import('./audio.js?v=5').then((m) => m.AudioChain);
+const loadCompositor = () => import('./compositor.js?v=6').then((m) => m.Compositor);
+const loadAudio = () => import('./audio.js?v=6').then((m) => m.AudioChain);
 
 // Show any unexpected error on screen, so a problem on the phone can be reported.
 function showError(message) {
@@ -19,7 +19,7 @@ window.addEventListener('error', (e) => showError(e.message || String(e.error)))
 window.addEventListener('unhandledrejection', (e) => showError(e.reason?.message || String(e.reason)));
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('timeout'), ms))]);
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 const DEFAULTS = {
   fontSize: 30, margin: 18, textOpacity: 1, shade: 0.45, panelHeight: 0.42, readingLine: 0.18,
@@ -106,6 +106,30 @@ function reparse() {
   $('forget-fixes').hidden = Object.keys(overrides).length === 0;
 }
 
+// ---------- Pronunciation playback (the iPhone's own Chinese voice) ----------
+function chineseVoice() {
+  const voices = window.speechSynthesis?.getVoices() || [];
+  return voices.find((v) => /^zh[-_]CN/i.test(v.lang)) || voices.find((v) => /^zh/i.test(v.lang)) || null;
+}
+window.speechSynthesis?.getVoices(); // starts loading the voice list
+
+function speakChinese(text, rate, button) {
+  const synth = window.speechSynthesis;
+  if (!synth) { alert('Este navegador no puede leer en voz alta.'); return; }
+  const wasPlaying = button.classList.contains('playing');
+  synth.cancel();
+  document.querySelectorAll('.play.playing').forEach((b) => b.classList.remove('playing'));
+  if (wasPlaying) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'zh-CN';
+  const voice = chineseVoice();
+  if (voice) u.voice = voice;
+  u.rate = rate;
+  u.onend = u.onerror = () => button.classList.remove('playing');
+  button.classList.add('playing');
+  synth.speak(u);
+}
+
 function renderRuns() {
   const box = $('runs');
   box.innerHTML = '';
@@ -115,7 +139,14 @@ function renderRuns() {
     el.className = 'run';
     const fixed = run.syllables.join(' ') !== run.auto.join(' ');
     el.innerHTML = `
-      <div class="run-top"><span class="run-han"></span>${fixed ? '<button class="reset">Volver al automático</button>' : ''}</div>
+      <div class="run-top">
+        <span class="run-han"></span>
+        <div class="run-play">
+          <button class="play" aria-label="Escuchar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10-6.5z"/></svg></button>
+          <button class="play slow" aria-label="Escuchar despacio">Lento</button>
+        </div>
+      </div>
+      ${fixed ? '<button class="reset">Volver al automático</button>' : ''}
       <input type="text" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
       <p class="warn" hidden></p>`;
     el.querySelector('.run-han').textContent = run.text;
@@ -139,6 +170,9 @@ function renderRuns() {
     };
     input.addEventListener('change', commit);
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+    for (const btn of el.querySelectorAll('.play')) {
+      btn.addEventListener('click', () => speakChinese(run.text, btn.classList.contains('slow') ? 0.5 : 0.85, btn));
+    }
     el.querySelector('.reset')?.addEventListener('click', () => {
       delete overrides[run.text];
       store.set('overrides', overrides);

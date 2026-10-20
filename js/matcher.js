@@ -1,6 +1,6 @@
 // Works out where in the script the speaker is from the recognizer's running transcript.
 // Only moves forward, and only on a confident match, so a misheard word never jumps the text.
-import { normalize } from './script.js?v=5';
+import { normalize } from './script.js?v=6';
 
 const TAIL = 4;
 const LOOK_BEHIND = 2;
