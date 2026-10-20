@@ -1,12 +1,12 @@
 // AutoPrompter: Pegar → Grabar → Guardar, on iPhone Safari.
-import { parseScript, normalize } from './script.js?v=4';
-import { ScriptMatcher } from './matcher.js?v=4';
-import { VoiceFollower } from './speech.js?v=4';
+import { parseScript, normalize } from './script.js?v=5';
+import { ScriptMatcher } from './matcher.js?v=5';
+import { VoiceFollower } from './speech.js?v=5';
 
 // Camera, background and audio code load only when the record screen opens,
 // so the script screen always works even if one of them can't run on this phone.
-const loadCompositor = () => import('./compositor.js?v=4').then((m) => m.Compositor);
-const loadAudio = () => import('./audio.js?v=4').then((m) => m.AudioChain);
+const loadCompositor = () => import('./compositor.js?v=5').then((m) => m.Compositor);
+const loadAudio = () => import('./audio.js?v=5').then((m) => m.AudioChain);
 
 // Show any unexpected error on screen, so a problem on the phone can be reported.
 function showError(message) {
@@ -19,7 +19,7 @@ window.addEventListener('error', (e) => showError(e.message || String(e.error)))
 window.addEventListener('unhandledrejection', (e) => showError(e.reason?.message || String(e.reason)));
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve('timeout'), ms))]);
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 const DEFAULTS = {
   fontSize: 30, margin: 18, textOpacity: 1, shade: 0.45, panelHeight: 0.42, readingLine: 0.18,
@@ -251,7 +251,7 @@ $('version').textContent = 'AutoPrompter ' + VERSION;
 // ---------- 2. Record screen ----------
 const rec = {
   stream: null, compositor: null, audio: null, follower: null, matcher: null,
-  recorder: null, chunks: [], mime: '', wakeLock: null, timer: null, scrollTimer: null,
+  recorder: null, chunks: [], mime: '', wakeLock: null, timer: null, raf: null, pos: 0, lines: null, visibleEnd: null,
   state: 'idle', // idle | countdown | recording | stopping
   current: 0, startedAt: 0,
 };
@@ -271,7 +271,6 @@ function applyPrompterLook() {
   for (const [id, key] of [['tc-size', 'fontSize'], ['tc-margin', 'margin'], ['tc-opacity', 'textOpacity'], ['tc-shade', 'shade'], ['tc-height', 'panelHeight'], ['tc-speed', 'wpm']]) {
     if (document.activeElement !== $(id)) $(id).value = settings[key];
   }
-  $('tc-speed-row').hidden = settings.scrollMode !== 'constant';
 }
 
 for (const [id, key] of [['tc-size', 'fontSize'], ['tc-margin', 'margin'], ['tc-opacity', 'textOpacity'], ['tc-shade', 'shade'], ['tc-height', 'panelHeight'], ['tc-speed', 'wpm']]) {
@@ -279,17 +278,38 @@ for (const [id, key] of [['tc-size', 'fontSize'], ['tc-margin', 'margin'], ['tc-
     settings[key] = Number($(id).value);
     saveSettings();
     applyPrompterLook();
-    scrollToCurrent(false);
+    scrollToCurrent();
   });
 }
+
+// Drag the bar at the bottom of the text panel to make it taller or shorter.
+$('prompter-grip').addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  const grip = $('prompter-grip');
+  grip.setPointerCapture(e.pointerId);
+  const top = $('prompter').getBoundingClientRect().top;
+  const move = (ev) => {
+    settings.panelHeight = Math.min(0.92, Math.max(0.2, (ev.clientY - top + 12) / window.innerHeight));
+    applyPrompterLook();
+    scrollToCurrent();
+  };
+  const up = () => {
+    grip.removeEventListener('pointermove', move);
+    saveSettings();
+  };
+  grip.addEventListener('pointermove', move);
+  grip.addEventListener('pointerup', up, { once: true });
+  grip.addEventListener('pointercancel', up, { once: true });
+});
 
 function setNotice(text) {
   $('notice').textContent = text || '';
   $('notice').hidden = !text;
 }
 
-/** Highlights read words and keeps the current line on the reading line. */
-function setCurrent(tokenIndex, smooth = true) {
+/** Highlights the word at the reading point. */
+function setCurrent(tokenIndex) {
+  if (rec.current === tokenIndex) return;
   rec.current = tokenIndex;
   const nodes = $('prompter-text').querySelectorAll('.t');
   for (const n of nodes) {
@@ -297,19 +317,51 @@ function setCurrent(tokenIndex, smooth = true) {
     n.classList.toggle('done', i < tokenIndex);
     n.classList.toggle('now', i === tokenIndex);
   }
-  scrollToCurrent(smooth);
 }
 
-let lastLineTop = null;
-function scrollToCurrent(smooth) {
+/** Where each line of the prompter starts: its top and the first tracked word on it. */
+function measureLines() {
   const box = $('prompter-text');
-  const target = box.querySelector(`.t[data-i="${rec.current}"]`) || box.querySelector('.t:last-of-type');
-  if (!target) return;
-  const top = target.offsetTop;
-  if (smooth && top === lastLineTop) return;
-  lastLineTop = top;
-  // The top padding equals the reading line, so this puts the current line right on it.
-  box.scrollTo({ top: Math.max(0, top - parseFloat(box.style.paddingTop || 0)), behavior: smooth ? 'smooth' : 'auto' });
+  const lines = [];
+  parsed.track.forEach((w, k) => {
+    const el = box.querySelector(`.t[data-i="${w.token}"]`);
+    if (!el) return;
+    const top = el.offsetTop;
+    if (!lines.length || top > lines[lines.length - 1].top + 2) lines.push({ top, first: k });
+  });
+  const lastEl = box.querySelector('.t:last-of-type');
+  const end = lines.length ? lines[lines.length - 1].top + (lastEl?.offsetHeight || 40) : 0;
+  lines.push({ top: end, first: parsed.track.length });
+  rec.lines = lines;
+  return lines;
+}
+
+/**
+ * Scrolls so the reading point `pos` (in words, fractional) sits on the reading line.
+ * The text glides through each line in proportion to the words read, so it never jumps.
+ */
+function renderPosition(pos) {
+  const box = $('prompter-text');
+  const lines = rec.lines || measureLines();
+  if (lines.length < 2) return;
+  let i = 0;
+  while (i < lines.length - 2 && lines[i + 1].first <= pos) i++;
+  const a = lines[i];
+  const b = lines[i + 1];
+  const frac = b.first > a.first ? Math.min(1, Math.max(0, (pos - a.first) / (b.first - a.first))) : 0;
+  const y = a.top + frac * (b.top - a.top);
+  box.scrollTop = Math.max(0, y - parseFloat(box.style.paddingTop || 0));
+  // The voice may only land on words that are visible in the panel.
+  const bottom = box.scrollTop + box.clientHeight;
+  let v = i;
+  while (v < lines.length - 1 && lines[v + 1].top + 4 < bottom) v++;
+  rec.visibleEnd = lines[Math.min(v + 1, lines.length - 1)].first - 1;
+  setCurrent(tokenForWord(Math.floor(pos)));
+}
+
+function scrollToCurrent() {
+  rec.lines = null;
+  renderPosition(rec.pos || 0);
 }
 
 function wordIndexForToken(tokenIndex) {
@@ -324,8 +376,10 @@ function tokenForWord(wordIndex) {
 $('prompter-text').addEventListener('click', (e) => {
   const t = e.target.closest('.t');
   if (!t || !rec.matcher) return;
-  rec.matcher.jump(wordIndexForToken(Number(t.dataset.i)));
-  setCurrent(tokenForWord(rec.matcher.position));
+  const k = wordIndexForToken(Number(t.dataset.i));
+  rec.matcher.jump(k);
+  rec.pos = k;
+  renderPosition(k);
 });
 
 async function openRecorder() {
@@ -335,7 +389,9 @@ async function openRecorder() {
   $('prompter-text').innerHTML = prompterHTML(parsed.tokens);
   applyPrompterLook();
   rec.matcher = new ScriptMatcher(parsed.track.map((w) => w.norm));
-  setCurrent(tokenForWord(0), false);
+  rec.pos = 0;
+  rec.current = -1;
+  scrollToCurrent();
   $('shutter').disabled = true;
   setNotice('Preparando la cámara…');
 
@@ -437,59 +493,58 @@ function pickMime() {
 }
 
 function startFollowing() {
-  const constant = () => {
-    rec.scrollTimer = setInterval(() => {
-      rec.matcher.jump(rec.matcher.position + 1);
-      setCurrent(tokenForWord(rec.matcher.position));
-    }, 60000 / settings.wpm);
-  };
-  if (settings.scrollMode === 'voice' && VoiceFollower.supported) {
-    rec.follower = new VoiceFollower({
-      onTranscript: (text) => {
-        if (rec.state !== 'recording') return;
-        if (rec.matcher.update(text)) setCurrent(tokenForWord(rec.matcher.position));
-      },
-      onError: () => {
-        setNotice('El seguimiento por voz se ha detenido. Sigo a velocidad fija; toca una palabra para saltar a ella.');
-        if (!rec.scrollTimer && rec.state === 'recording') constant();
-      },
-    });
-    rec.follower.start(settings.lang);
-  } else {
-    rec.pendingConstant = constant;
-  }
+  rec.voice = settings.scrollMode === 'voice' && VoiceFollower.supported;
+  if (!rec.voice) return;
+  rec.follower = new VoiceFollower({
+    onTranscript: (text) => {
+      if (rec.state !== 'recording') return;
+      rec.matcher.update(text, rec.visibleEnd ?? Infinity);
+    },
+    onError: () => {
+      rec.voice = false;
+      setNotice('El seguimiento por voz se ha detenido. Sigo a velocidad fija; toca una palabra para saltar a ella.');
+    },
+  });
+  rec.follower.start(settings.lang);
 }
 
-/** Chinese can't be heard by the recognizer, so while the next item is Chinese, step through it at a steady pace. */
-function startChineseTimer() {
-  let budget = -600; // give the speaker a moment to start after the countdown
+/**
+ * The text always moves forward at the chosen speed. The voice only steers that speed:
+ * faster when you are ahead of the text, slower when you are behind, so it never jumps.
+ */
+function startScrolling() {
   let last = performance.now();
-  rec.hanTimer = setInterval(() => {
-    const now = performance.now();
-    const elapsed = now - last;
+  rec.rate = 1;
+  const frame = (now) => {
+    if (rec.state !== 'recording') return;
+    const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
     last = now;
-    const item = parsed.track[rec.matcher.position];
-    if (!item || !item.han) { budget = Math.min(budget, 0); return; }
-    budget += elapsed;
-    const step = 1000 / settings.hanRate;
-    let moved = false;
-    while (budget >= step && parsed.track[rec.matcher.position]?.han) {
-      budget -= step;
-      rec.matcher.jump(rec.matcher.position + 1);
-      moved = true;
+    const track = parsed.track;
+    let target = 1;
+    if (rec.voice) {
+      // Chinese can't be heard by the recognizer: the voice reference follows the text through it.
+      while (track[rec.matcher.position]?.han && rec.matcher.position < Math.floor(rec.pos)) rec.matcher.position++;
+      // The recognizer reports a word just after it is said, so the speaker is about half a word further on.
+      const gap = rec.matcher.position + 0.5 - rec.pos;
+      target = Math.min(3.5, Math.max(0.15, 1 + 0.3 * gap));
     }
-    if (moved) setCurrent(tokenForWord(rec.matcher.position));
-  }, 100);
+    rec.rate += (target - rec.rate) * Math.min(1, dt * 2.5);
+    const item = track[Math.floor(rec.pos)];
+    if (item) {
+      const seconds = item.han ? 1 / settings.hanRate : 60 / settings.wpm;
+      rec.pos = Math.min(track.length, rec.pos + (dt / seconds) * rec.rate);
+    }
+    renderPosition(rec.pos);
+    rec.raf = requestAnimationFrame(frame);
+  };
+  rec.raf = requestAnimationFrame(frame);
 }
 
 function stopFollowing() {
-  clearInterval(rec.hanTimer);
-  rec.hanTimer = null;
+  cancelAnimationFrame(rec.raf);
+  rec.raf = null;
   rec.follower?.stop();
   rec.follower = null;
-  clearInterval(rec.scrollTimer);
-  rec.scrollTimer = null;
-  rec.pendingConstant = null;
 }
 
 async function startRecording() {
@@ -535,9 +590,7 @@ async function startRecording() {
   rec.recorder.start(1000);
   rec.audio?.startMeter();
   rec.state = 'recording';
-  rec.pendingConstant?.();
-  if (settings.scrollMode === 'voice' && rec.follower) startChineseTimer();
-  rec.pendingConstant = null;
+  startScrolling();
   rec.startedAt = Date.now();
   $('screen-record').classList.add('recording');
   $('shutter').classList.add('on');
@@ -579,7 +632,7 @@ $('toggle-text').addEventListener('click', () => { $('text-controls').hidden = !
 $('shutter').addEventListener('click', () => {
   if (rec.state === 'idle') startRecording(); else stopRecording();
 });
-window.addEventListener('resize', () => { if (!$('screen-record').hidden) { applyPrompterLook(); scrollToCurrent(false); } });
+window.addEventListener('resize', () => { if (!$('screen-record').hidden) { applyPrompterLook(); scrollToCurrent(); } });
 
 // ---------- 3. Result ----------
 let result = null;

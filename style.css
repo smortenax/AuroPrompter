@@ -96,6 +96,8 @@ textarea {
 }
 .prompter .prompter-text { position: relative; height: 100%; overflow-y: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 .prompter .prompter-text::-webkit-scrollbar { display: none; }
+.prompter-grip { position: absolute; left: 0; right: 0; bottom: 0; height: 28px; display: grid; place-items: center; touch-action: none; cursor: ns-resize; }
+.prompter-grip span { width: 44px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.55); }
 .reading-line { position: absolute; left: 0; width: 6px; height: 2.2em; border-radius: 0 4px 4px 0; background: var(--cue); opacity: 0.8; pointer-events: none; }
 .notice { position: absolute; left: 16px; right: 16px; bottom: calc(var(--safe-b) + 130px); text-align: center; font-size: 14px; padding: 10px 14px; border-radius: 14px; background: rgba(23, 26, 31, 0.86); }
 .countdown { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; pointer-events: none; text-align: center; padding: 0 32px; }
